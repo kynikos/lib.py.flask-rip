@@ -25,11 +25,6 @@ from flask_marshmallow import Marshmallow, Schema as MASchema
 
 
 class API:
-    # TODO: It would be cool if this accepted a list of packages where to
-    #       look for modules with Resource-derived classes, and import them
-    #       dynamically without requiring them to be imported manually in the
-    #       main app
-
     REQUESTMETHOD_TO_GETDATA = {
         'delete': lambda request: request.args,
         'get': lambda request: request.args,
