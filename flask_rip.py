@@ -20,7 +20,7 @@ from functools import wraps
 from collections import namedtuple
 from flask import request
 from flask.views import MethodView
-from marshmallow import post_load
+from marshmallow import post_load, UnmarshalResult, ValidationError
 from flask_marshmallow import Marshmallow, Schema as MASchema
 
 
@@ -75,7 +75,13 @@ class API:
             def inner(self, *args, **kwargs):
                 sdata = get_data(request)
                 indata = in_schema.load(sdata)
-                outdata = function(self, indata.data, *args, **kwargs)
+                if type(indata) is UnmarshalResult:
+                    # Marshmallow<3
+                    if indata.errors:
+                        raise ValidationError(indata.errors)
+                    indata = indata.data
+                # else it's Marshmallow>=3, which returns the data directly
+                outdata = function(self, indata, *args, **kwargs)
                 return out_schema.jsonify(outdata), out_code
             return inner
         return decorator
