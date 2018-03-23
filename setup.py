@@ -1,9 +1,9 @@
 from setuptools import setup
 
 setup(
-    # Flask-RIP was already taken
-    name='flask-rip-lib',
-    version='1.0.0',
+    # Flask-RIP is already taken
+    name='flask-restinpeace',
+    version='1.0.1',
     description=('Create Flask REST APIs in peace.'),
     long_description=('Create Flask REST APIs in peace.'),
     url='https://github.com/kynikos/lib.py.flask-rip',
