@@ -67,22 +67,42 @@ class API:
             return inner
         return decorator
 
-    def marshal(self, in_schema, out_schema, out_code=200):
+    def expect(self, schema):
         def decorator(function):
             get_data = self.REQUESTMETHOD_TO_GETDATA[function.__name__]
 
             @wraps(function)
-            def inner(self, *args, **kwargs):
+            def inner(inself, *args, **kwargs):
                 sdata = get_data(request)
-                indata = in_schema.load(sdata)
+                indata = schema.load(sdata)
+
                 if type(indata) is UnmarshalResult:
                     # Marshmallow<3
                     if indata.errors:
                         raise ValidationError(indata.errors)
                     indata = indata.data
                 # else it's Marshmallow>=3, which returns the data directly
-                outdata = function(self, indata, *args, **kwargs)
-                return out_schema.jsonify(outdata), out_code
+
+                return function(inself, indata, *args, **kwargs)
+            return inner
+        return decorator
+
+    def respond(self, schema, code=200):
+        def decorator(function):
+            @wraps(function)
+            def inner(inself, *args, **kwargs):
+                outdata = function(inself, *args, **kwargs)
+                return schema.jsonify(outdata), code
+            return inner
+        return decorator
+
+    def marshal(self, in_schema, out_schema, out_code=200):
+        def decorator(function):
+            @self.expect(in_schema)
+            @self.respond(out_schema, code=out_code)
+            @wraps(function)
+            def inner(inself, *args, **kwargs):
+                return function(inself, *args, **kwargs)
             return inner
         return decorator
 
