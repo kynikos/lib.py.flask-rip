@@ -16,31 +16,38 @@
 # You should have received a copy of the GNU General Public License
 # along with Flask RIP.  If not, see <http://www.gnu.org/licenses/>.
 
-from functools import wraps
+from functools import wraps, partialmethod
 from collections import namedtuple
+import inspect
+import re
 from flask import request
-from flask.views import MethodView
 from marshmallow import post_load, UnmarshalResult, ValidationError
 from flask_marshmallow import Marshmallow, Schema as MASchema
+
+IMPLICIT = 0b01
+EXPLICIT = 0b10
 
 
 class API:
     REQUESTMETHOD_TO_GETDATA = {
-        'delete': lambda request: request.args,
-        'get': lambda request: request.args,
-        'head': lambda request: request.args,
-        'options': lambda request: request.args,
-        'patch': lambda request: request.get_json(),
-        'post': lambda request: request.get_json(),
-        'put': lambda request: request.get_json(),
+        'DELETE': lambda: request.args,
+        'GET': lambda: request.args,
+        'HEAD': lambda: request.args,
+        'OPTIONS': lambda: request.args,
+        'PATCH': lambda: request.get_json(),
+        'POST': lambda: request.get_json(),
+        'PUT': lambda: request.get_json(),
     }
 
-    def __init__(self, app, endpoint='/api'):
+    def __init__(self, app, root_path=None, base_method_path=IMPLICIT):
         self.app = app
-        sep = endpoint.strip('/')
-        # Later I rely on base_endpoint to also *end* with a slash
-        self.base_endpoint = sep.join(('/', '/')) if sep else '/'
+        # Don't try to normalize leading/trailing slashes,
+        # "we're all consenting adults here"
+        self.root_path = root_path or ''
+        self.base_method_path = base_method_path
         self.ma = Marshmallow(app)
+
+        self.resources = []
 
         # Convenience attributes to allow importing directly from the API
         # instance
@@ -48,33 +55,44 @@ class API:
         self.Schema = Schema
         self.MASchema = MASchema
 
-    def add_resource(self, View, *rules, **options):
-        view = View.as_view(View.__name__)
-        for rule in rules:
-            # The following must also work when base_endpoint is simply '/'
-            # Preserve the original slash (or lack thereof) on the right end
-            absrule = ''.join((self.base_endpoint, rule.lstrip('/')))
-            self.app.add_url_rule(absrule, view_func=view, **options)
-        return view
+    def add_resource(self, Resource_, *args, **kwargs):
+        resource = Resource_(self, *args, **kwargs)
+        self.resources.append(resource)
+        return resource
 
-    def route(self, *rules, **options):
-        def decorator(View):
-            self.add_resource(View, *rules, **options)
+    def resource(self, *args, **kwargs):
+        def decorator(Resource_):
+            self.add_resource(Resource_, *args, **kwargs)
 
-            @wraps(View)
-            def inner(*args, **kwargs):
-                return View(*args, **kwargs)
+            @wraps(Resource_)
+            def inner(*fargs, **fkwargs):
+                return Resource_(*fargs, **fkwargs)
             return inner
         return decorator
 
-    def expect(self, schema):
+    def _marshal(self, in_method, in_schema, out_schema, in_get_data=None,
+                 out_code=200):
+        if in_get_data:
+            get_data = in_get_data
+        else:
+            get_data = self.REQUESTMETHOD_TO_GETDATA[in_method]
+
+        if in_schema:
+            unmarshal_data = lambda: in_schema.load(get_data())  # noqa
+        else:
+            unmarshal_data = lambda: get_data()   # noqa
+
+        if out_schema:
+            marshal_data = lambda outdata: out_schema.jsonify(outdata)  # noqa
+        else:
+            marshal_data = lambda outdata: outdata  # noqa
+
         def decorator(function):
-            get_data = self.REQUESTMETHOD_TO_GETDATA[function.__name__]
+            function._http_method = in_method
 
             @wraps(function)
             def inner(inself, *args, **kwargs):
-                sdata = get_data(request)
-                indata = schema.load(sdata)
+                indata = unmarshal_data()
 
                 if type(indata) is UnmarshalResult:
                     # Marshmallow<3
@@ -83,32 +101,83 @@ class API:
                     indata = indata.data
                 # else it's Marshmallow>=3, which returns the data directly
 
-                return function(inself, indata, *args, **kwargs)
+                outdata = function(inself, indata, *args, **kwargs)
+
+                return marshal_data(outdata), out_code
             return inner
         return decorator
 
-    def respond(self, schema, code=200):
-        def decorator(function):
-            @wraps(function)
-            def inner(inself, *args, **kwargs):
-                outdata = function(inself, *args, **kwargs)
-                return schema.jsonify(outdata), code
-            return inner
-        return decorator
-
-    def marshal(self, in_schema, out_schema, out_code=200):
-        def decorator(function):
-            @self.expect(in_schema)
-            @self.respond(out_schema, code=out_code)
-            @wraps(function)
-            def inner(inself, *args, **kwargs):
-                return function(inself, *args, **kwargs)
-            return inner
-        return decorator
+    delete = partialmethod(_marshal, 'DELETE')
+    get = partialmethod(_marshal, 'GET')
+    head = partialmethod(_marshal, 'HEAD')
+    options = partialmethod(_marshal, 'OPTIONS')
+    patch = partialmethod(_marshal, 'PATCH')
+    post = partialmethod(_marshal, 'POST')
+    put = partialmethod(_marshal, 'PUT')
 
 
-class Resource(MethodView):
-    pass
+# Adapted from https://stackoverflow.com/a/1176023/645498
+# Don't store in the Resource class to not pollute its namespace
+_FIRST_CAP_RE = re.compile('([A-Z]+)([A-Z][a-z])')
+_ALL_CAP_RE = re.compile('([a-z0-9])([A-Z])')
+
+
+def camel_to_kebab(name):
+    name1 = _FIRST_CAP_RE.sub(r'\1-\2', name)
+    name2 = _ALL_CAP_RE.sub(r'\1-\2', name1).lower()
+    return '/' + name2.replace('_', '-')
+
+
+class Resource():
+    def __init__(self, api, super_endpoint=None, super_path=None,
+                 res_path=camel_to_kebab, var_path=None):
+        # NOTE: Do not pollute the class' namespace, which holds the route
+        #       handlers' names
+        # self.__api = api
+
+        try:
+            respath = res_path(self.__class__.__name__)
+        except TypeError:
+            # url_name isn't callable, I suppose it's a string or None
+            respath = res_path or '/' + self.__class__.__name__
+
+        for fname, func in inspect.getmembers(self,
+                                              predicate=inspect.ismethod):
+            try:
+                http_method = func._http_method
+            except AttributeError:
+                continue
+            else:
+                # Don't try to normalize leading/trailing slashes,
+                # "we're all consenting adults here"
+                baseabsrule = ''.join((api.root_path, super_path or '',
+                                       respath, var_path or ''))
+                absrule = '/'.join((baseabsrule, fname))
+
+                endpoint = ':'.join((self.__class__.__name__, fname))
+                if super_endpoint:
+                    endpoint = ':'.join((super_endpoint, endpoint))
+
+                if fname == http_method.lower():
+                    if api.base_method_path & IMPLICIT:
+                        api.app.add_url_rule(
+                            baseabsrule,
+                            endpoint=endpoint,
+                            view_func=func,
+                            methods=(http_method, ))
+
+                    if api.base_method_path & EXPLICIT:
+                        api.app.add_url_rule(
+                            absrule,
+                            endpoint=endpoint,
+                            view_func=func,
+                            methods=(http_method, ))
+                else:
+                    api.app.add_url_rule(
+                        absrule,
+                        endpoint=endpoint,
+                        view_func=func,
+                        methods=(http_method, ))
 
 
 class Schema(MASchema):
