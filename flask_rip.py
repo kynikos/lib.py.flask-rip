@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Flask RIP.  If not, see <http://www.gnu.org/licenses/>.
 
-from functools import wraps, partialmethod
+from functools import wraps
 from collections import namedtuple
 import inspect
 import re
@@ -41,16 +41,6 @@ def camel_to_kebab(name):
 
 class API:
     ENDPOINT_GLUE = ':'
-
-    REQUESTMETHOD_TO_GETDATA = {
-        'DELETE': lambda: request.args,
-        'GET': lambda: request.args,
-        'HEAD': lambda: request.args,
-        'OPTIONS': lambda: request.args,
-        'PATCH': lambda: request.get_json(),
-        'POST': lambda: request.get_json(),
-        'PUT': lambda: request.get_json(),
-    }
 
     def __init__(self, app, base_path=None, base_endpoint=None,
                  parent_api=None, path_from_endpoint=camel_to_kebab,
@@ -91,13 +81,19 @@ class API:
         self.ma = Marshmallow(app)
 
         self.subapis = []
-        self.resources = []
+
+        self.delete = ResourceFromClass.delete
+        self.get = ResourceFromClass.get
+        self.head = ResourceFromClass.head
+        self.options = ResourceFromClass.options
+        self.patch = ResourceFromClass.patch
+        self.post = ResourceFromClass.post
+        self.put = ResourceFromClass.put
 
         # Convenience attributes to allow importing directly from the API
         # instance
         self.Schema = Schema
         self.MASchema = MASchema
-        self.Resource = Resource
 
     def append_api(self, base_endpoint, base_path=None):
         subapi = self.__class__(self.app, parent_api=self, base_path=base_path,
@@ -106,8 +102,8 @@ class API:
         return subapi
 
     def add_resource(self, Resource_, *args, **kwargs):
-        resource = Resource_(self, *args, **kwargs)
-        self.resources.append(resource)
+        resource = Resource_()
+        ResourceFromClass(self, resource, *args, **kwargs)
         return resource
 
     def resource(self, *args, **kwargs):
@@ -120,12 +116,77 @@ class API:
             return inner
         return decorator
 
-    def _marshal(self, in_method, in_schema, out_schema, in_get_data=None,
-                 out_code=200):
+    def create_resource(self, *args, **kwargs):
+        return ResourceFromFunctions(self, *args, **kwargs)
+
+
+class _Resource:
+    REQUESTMETHOD_TO_GETDATA = {
+        'DELETE': lambda: request.args,
+        'GET': lambda: request.args,
+        'HEAD': lambda: request.args,
+        'OPTIONS': lambda: request.args,
+        'PATCH': lambda: request.get_json(),
+        'POST': lambda: request.get_json(),
+        'PUT': lambda: request.get_json(),
+    }
+
+    def __init__(self, api, endpoint, res_path, var_path):
+        self.api = api
+
+        # Don't try to normalize leading/trailing slashes,
+        # "we're all consenting adults here"
+        self.baseabsrule = ''.join((api.base_path or '', res_path,
+                                    var_path or ''))
+
+        self.res_endpoint = api.ENDPOINT_GLUE.join((
+            api.base_endpoint, endpoint)) if api.base_endpoint else endpoint
+
+    def _route_function(self, function, var_path, http_method):
+        fname = function.__name__
+
+        # Don't try to normalize leading/trailing slashes,
+        # "we're all consenting adults here"
+        baseabsrule = ''.join((self.baseabsrule, var_path or ''))
+        absrule = '/'.join((baseabsrule, fname))
+
+        endpoint = self.api.ENDPOINT_GLUE.join((self.res_endpoint, fname))
+        if fname == http_method.lower():
+            if self.api.base_method_path & IMPLICIT:
+                self.api.app.add_url_rule(
+                    baseabsrule,
+                    endpoint=endpoint,
+                    view_func=function,
+                    methods=(http_method, ))
+
+            if self.api.base_method_path & EXPLICIT:
+                self.api.app.add_url_rule(
+                    absrule,
+                    endpoint=endpoint,
+                    view_func=function,
+                    methods=(http_method, ))
+        else:
+            self.api.app.add_url_rule(
+                absrule,
+                endpoint=endpoint,
+                view_func=function,
+                methods=(http_method, ))
+
+    # This function may be called as a method or classmethod
+    def _route_function_hook(self_or_cls, function, var_path, http_method):
+        raise NotImplementedError()
+
+    # This function may be called as a method or classmethod
+    def _call_function(self_or_cls, function, indata, *args, **kwargs):
+        raise NotImplementedError()
+
+    # This function may be called as a method or classmethod
+    def _make_decorator(self_or_cls, in_method, in_schema, out_schema,
+                        var_path=None, in_get_data=None, out_code=200):
         if in_get_data:
             get_data = in_get_data
         else:
-            get_data = self.REQUESTMETHOD_TO_GETDATA[in_method]
+            get_data = self_or_cls.REQUESTMETHOD_TO_GETDATA[in_method]
 
         if in_schema:
             unmarshal_data = lambda: in_schema.load(get_data())  # noqa
@@ -138,10 +199,16 @@ class API:
             marshal_data = lambda outdata: outdata  # noqa
 
         def decorator(function):
+            self_or_cls._route_function_hook(function, var_path, in_method)
+            function._var_path = var_path
             function._http_method = in_method
 
             @wraps(function)
-            def inner(inself, *args, **kwargs):
+            def inner(*args, **kwargs):
+                # This might also be a class method, i.e. the first argument
+                # could be a class instance
+                # def inner(inself, *args, **kwargs):
+
                 indata = unmarshal_data()
 
                 if type(indata) is UnmarshalResult:
@@ -151,73 +218,100 @@ class API:
                     indata = indata.data
                 # else it's Marshmallow>=3, which returns the data directly
 
-                outdata = function(inself, indata, *args, **kwargs)
+                outdata = self_or_cls._call_function(function, indata, *args,
+                                                     **kwargs)
 
                 return marshal_data(outdata), out_code
             return inner
         return decorator
 
-    delete = partialmethod(_marshal, 'DELETE')
-    get = partialmethod(_marshal, 'GET')
-    head = partialmethod(_marshal, 'HEAD')
-    options = partialmethod(_marshal, 'OPTIONS')
-    patch = partialmethod(_marshal, 'PATCH')
-    post = partialmethod(_marshal, 'POST')
-    put = partialmethod(_marshal, 'PUT')
+
+class ResourceFromFunctions(_Resource):
+    def __init__(self, api, endpoint, res_path=None, var_path=None):
+        respath = res_path or '/' + api.path_from_endpoint(endpoint)
+        super().__init__(api, endpoint, res_path=respath, var_path=var_path)
+
+    def delete(self, *args, **kwargs):
+        return self._make_decorator('DELETE', *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        return self._make_decorator('GET', *args, **kwargs)
+
+    def head(self, *args, **kwargs):
+        return self._make_decorator('HEAD', *args, **kwargs)
+
+    def options(self, *args, **kwargs):
+        return self._make_decorator('OPTIONS', *args, **kwargs)
+
+    def patch(self, *args, **kwargs):
+        return self._make_decorator('PATCH', *args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        return self._make_decorator('POST', *args, **kwargs)
+
+    def put(self, *args, **kwargs):
+        return self._make_decorator('PUT', *args, **kwargs)
+
+    def _route_function_hook(self, function, var_path, http_method):
+        self._route_function(function, var_path, http_method)
+
+    def _call_function(self, function, indata, *args, **kwargs):
+        return function(indata, *args, **kwargs)
 
 
-class Resource():
-    def __init__(self, api, res_path=None, var_path=None):
-        # NOTE: Do not pollute the class' namespace, which holds the route
-        #       handlers' names
-        # self.__api = api
-
+class ResourceFromClass(_Resource):
+    def __init__(self, api, resource, res_path=None, var_path=None):
         respath = res_path or '/' + api.path_from_endpoint(
-            self.__class__.__name__)
+            resource.__class__.__name__)
 
-        # Don't try to normalize leading/trailing slashes,
-        # "we're all consenting adults here"
-        baseabsrule = ''.join((api.base_path or '', respath, var_path or ''))
+        super().__init__(api, endpoint=resource.__class__.__name__,
+                         res_path=respath, var_path=var_path)
 
-        endpoint_parts = []
-        if api.base_endpoint:
-            endpoint_parts.append(api.base_endpoint)
-        endpoint_parts.append(self.__class__.__name__)
-        pre_endpoint = api.ENDPOINT_GLUE.join(endpoint_parts)
-
-        for fname, func in inspect.getmembers(self,
-                                              predicate=inspect.ismethod):
+        for fname, function in inspect.getmembers(resource,
+                                                  predicate=inspect.ismethod):
             try:
-                http_method = func._http_method
+                func_var_path = function._var_path
+                http_method = function._http_method
             except AttributeError:
                 continue
-            else:
-                # Don't try to normalize leading/trailing slashes,
-                # "we're all consenting adults here"
-                absrule = '/'.join((baseabsrule, fname))
 
-                endpoint = api.ENDPOINT_GLUE.join((pre_endpoint, fname))
+            self._route_function(function, func_var_path, http_method)
 
-                if fname == http_method.lower():
-                    if api.base_method_path & IMPLICIT:
-                        api.app.add_url_rule(
-                            baseabsrule,
-                            endpoint=endpoint,
-                            view_func=func,
-                            methods=(http_method, ))
+    @classmethod
+    def delete(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'DELETE', *args, **kwargs)
 
-                    if api.base_method_path & EXPLICIT:
-                        api.app.add_url_rule(
-                            absrule,
-                            endpoint=endpoint,
-                            view_func=func,
-                            methods=(http_method, ))
-                else:
-                    api.app.add_url_rule(
-                        absrule,
-                        endpoint=endpoint,
-                        view_func=func,
-                        methods=(http_method, ))
+    @classmethod
+    def get(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'GET', *args, **kwargs)
+
+    @classmethod
+    def head(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'HEAD', *args, **kwargs)
+
+    @classmethod
+    def options(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'OPTIONS', *args, **kwargs)
+
+    @classmethod
+    def patch(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'PATCH', *args, **kwargs)
+
+    @classmethod
+    def post(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'POST', *args, **kwargs)
+
+    @classmethod
+    def put(cls, *args, **kwargs):
+        return cls._make_decorator(cls, 'PUT', *args, **kwargs)
+
+    @classmethod
+    def _route_function_hook(cls, function, var_path, http_method):
+        pass
+
+    @classmethod
+    def _call_function(cls, function, indata, *args, **kwargs):
+        return function(args[0], indata, *args[1:], **kwargs)
 
 
 class Schema(MASchema):
