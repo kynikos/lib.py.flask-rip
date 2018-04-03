@@ -27,8 +27,21 @@ from flask_marshmallow import Marshmallow, Schema as MASchema
 IMPLICIT = 0b01
 EXPLICIT = 0b10
 
+# Adapted from https://stackoverflow.com/a/1176023/645498
+# Don't store in the Resource class to not pollute its namespace
+_FIRST_CAP_RE = re.compile('([A-Z]+)([A-Z][a-z])')
+_ALL_CAP_RE = re.compile('([a-z0-9])([A-Z])')
+
+
+def camel_to_kebab(name):
+    name1 = _FIRST_CAP_RE.sub(r'\1-\2', name)
+    name2 = _ALL_CAP_RE.sub(r'\1-\2', name1).lower()
+    return name2.replace('_', '-')
+
 
 class API:
+    ENDPOINT_GLUE = ':'
+
     REQUESTMETHOD_TO_GETDATA = {
         'DELETE': lambda: request.args,
         'GET': lambda: request.args,
@@ -39,21 +52,58 @@ class API:
         'PUT': lambda: request.get_json(),
     }
 
-    def __init__(self, app, root_path=None, base_method_path=IMPLICIT):
+    def __init__(self, app, base_path=None, base_endpoint=None,
+                 parent_api=None, path_from_endpoint=camel_to_kebab,
+                 base_method_path=IMPLICIT):
         self.app = app
-        # Don't try to normalize leading/trailing slashes,
-        # "we're all consenting adults here"
-        self.root_path = root_path or ''
-        self.base_method_path = base_method_path
+        self.parent_api = parent_api
+
+        if parent_api:
+            self.path_from_endpoint = (path_from_endpoint or
+                                       parent_api.path_from_endpoint)
+            self.base_method_path = (base_method_path or
+                                     parent_api.base_method_path)
+
+            base_endpoint = base_endpoint or self.__class__.__name__
+            if parent_api.base_endpoint:
+                # Do use the parent glue here
+                self.base_endpoint = parent_api.ENDPOINT_GLUE.join((
+                    parent_api.base_endpoint, base_endpoint))
+            else:
+                self.base_endpoint = base_endpoint
+
+            # Don't try to normalize leading/trailing slashes,
+            # "we're all consenting adults here"
+            base_path = base_path or '/' + path_from_endpoint(
+                self.__class__.__name__)
+            if parent_api.base_path:
+                self.base_path = ''.join((parent_api.base_path, base_path))
+            else:
+                self.base_path = base_path
+        else:
+            self.path_from_endpoint = path_from_endpoint
+            self.base_method_path = base_method_path
+            self.base_endpoint = base_endpoint
+            # Don't try to normalize leading/trailing slashes,
+            # "we're all consenting adults here"
+            self.base_path = base_path
+
         self.ma = Marshmallow(app)
 
+        self.subapis = []
         self.resources = []
 
         # Convenience attributes to allow importing directly from the API
         # instance
-        self.Resource = Resource
         self.Schema = Schema
         self.MASchema = MASchema
+        self.Resource = Resource
+
+    def append_api(self, base_endpoint, base_path=None):
+        subapi = self.__class__(self.app, parent_api=self, base_path=base_path,
+                                base_endpoint=base_endpoint)
+        self.subapis.append(subapi)
+        return subapi
 
     def add_resource(self, Resource_, *args, **kwargs):
         resource = Resource_(self, *args, **kwargs)
@@ -116,30 +166,24 @@ class API:
     put = partialmethod(_marshal, 'PUT')
 
 
-# Adapted from https://stackoverflow.com/a/1176023/645498
-# Don't store in the Resource class to not pollute its namespace
-_FIRST_CAP_RE = re.compile('([A-Z]+)([A-Z][a-z])')
-_ALL_CAP_RE = re.compile('([a-z0-9])([A-Z])')
-
-
-def camel_to_kebab(name):
-    name1 = _FIRST_CAP_RE.sub(r'\1-\2', name)
-    name2 = _ALL_CAP_RE.sub(r'\1-\2', name1).lower()
-    return '/' + name2.replace('_', '-')
-
-
 class Resource():
-    def __init__(self, api, super_endpoint=None, super_path=None,
-                 res_path=camel_to_kebab, var_path=None):
+    def __init__(self, api, res_path=None, var_path=None):
         # NOTE: Do not pollute the class' namespace, which holds the route
         #       handlers' names
         # self.__api = api
 
-        try:
-            respath = res_path(self.__class__.__name__)
-        except TypeError:
-            # url_name isn't callable, I suppose it's a string or None
-            respath = res_path or '/' + self.__class__.__name__
+        respath = res_path or '/' + api.path_from_endpoint(
+            self.__class__.__name__)
+
+        # Don't try to normalize leading/trailing slashes,
+        # "we're all consenting adults here"
+        baseabsrule = ''.join((api.base_path or '', respath, var_path or ''))
+
+        endpoint_parts = []
+        if api.base_endpoint:
+            endpoint_parts.append(api.base_endpoint)
+        endpoint_parts.append(self.__class__.__name__)
+        pre_endpoint = api.ENDPOINT_GLUE.join(endpoint_parts)
 
         for fname, func in inspect.getmembers(self,
                                               predicate=inspect.ismethod):
@@ -150,13 +194,9 @@ class Resource():
             else:
                 # Don't try to normalize leading/trailing slashes,
                 # "we're all consenting adults here"
-                baseabsrule = ''.join((api.root_path, super_path or '',
-                                       respath, var_path or ''))
                 absrule = '/'.join((baseabsrule, fname))
 
-                endpoint = ':'.join((self.__class__.__name__, fname))
-                if super_endpoint:
-                    endpoint = ':'.join((super_endpoint, endpoint))
+                endpoint = api.ENDPOINT_GLUE.join((pre_endpoint, fname))
 
                 if fname == http_method.lower():
                     if api.base_method_path & IMPLICIT:
