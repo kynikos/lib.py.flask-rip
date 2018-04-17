@@ -200,9 +200,6 @@ class _Resource:
             marshal_data = lambda outdata: outdata  # noqa
 
         def decorator(function):
-            self._route_function_hook(function, var_path, in_method)
-            function._var_path = var_path
-            function._http_method = in_method
 
             @wraps(function)
             def inner(*args, **kwargs):
@@ -223,6 +220,10 @@ class _Resource:
                                               **kwargs)
 
                 return marshal_data(outdata), out_code
+
+            self._route_function_hook(inner, var_path, in_method)
+            inner._var_path = var_path
+            inner._http_method = in_method
 
             return inner
         return decorator
