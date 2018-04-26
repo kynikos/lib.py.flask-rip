@@ -154,16 +154,18 @@ class _Resource:
             (self.api.base_endpoint, endpoint)
         ) if self.api.base_endpoint else endpoint
 
-    def _route_function(self, function, var_path, http_method):
-        fname = function.__name__
+    def _route_function(self, function, var_path, http_method, action):
+        action = action or function.__name__
 
         # Don't try to normalize leading/trailing slashes,
         # "we're all consenting adults here"
         baseabsrule = ''.join((self.baseabsrule, var_path or ''))
-        absrule = '/'.join((baseabsrule, fname))
+        absrule = '/'.join((baseabsrule, action))
 
-        endpoint = self.api.ENDPOINT_GLUE.join((self.res_endpoint, fname))
-        if fname == http_method.lower():
+        endpoint = self.api.ENDPOINT_GLUE.join((self.res_endpoint,
+                                                function.__name__))
+
+        if action == http_method.lower():
             if self.api.base_method_path & IMPLICIT:
                 self.api.app.add_url_rule(
                     baseabsrule,
@@ -188,14 +190,15 @@ class _Resource:
             with self.api.app.test_request_context():
                 self.api.openapi_spec.add_path(view=function)
 
-    def _route_function_hook(self, function, var_path, http_method):
+    def _route_function_hook(self, function, var_path, http_method, action):
         raise NotImplementedError()
 
     def _call_function(self, function, indata, *args, **kwargs):
         raise NotImplementedError()
 
     def _make_decorator(self, in_method, in_schema, out_schema,
-                        var_path=None, in_get_data=None, out_code=200):
+                        var_path=None, action=None, in_get_data=None,
+                        out_code=200):
         if in_get_data:
             get_data = in_get_data
         else:
@@ -237,9 +240,10 @@ class _Resource:
 
                 return marshal_data(outdata), out_code
 
-            self._route_function_hook(inner, var_path, in_method)
+            self._route_function_hook(inner, var_path, in_method, action)
             inner._var_path = var_path
             inner._http_method = in_method
+            inner._action = action
 
             return inner
         return decorator
@@ -258,8 +262,8 @@ class ResourceFromFunctions(_Resource):
         respath = res_path or '/' + api.path_from_endpoint(endpoint)
         super().post_init(endpoint, res_path=respath, resvar_path=resvar_path)
 
-    def _route_function_hook(self, function, var_path, http_method):
-        self._route_function(function, var_path, http_method)
+    def _route_function_hook(self, function, var_path, http_method, action):
+        self._route_function(function, var_path, http_method, action)
 
     def _call_function(self, function, indata, *args, **kwargs):
         return function(indata, *args, **kwargs)
@@ -281,12 +285,13 @@ class ResourceFromClass(_Resource):
             try:
                 func_var_path = function._var_path
                 http_method = function._http_method
+                action = function._action
             except AttributeError:
                 continue
 
-            self._route_function(function, func_var_path, http_method)
+            self._route_function(function, func_var_path, http_method, action)
 
-    def _route_function_hook(self, function, var_path, http_method):
+    def _route_function_hook(self, function, var_path, http_method, action):
         pass
 
     def _call_function(self, function, indata, *args, **kwargs):
