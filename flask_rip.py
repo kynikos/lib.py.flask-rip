@@ -144,11 +144,11 @@ class _Resource:
     def __init__(self, api):
         self.api = api
 
-    def post_init(self, endpoint, res_path, var_path):
+    def post_init(self, endpoint, res_path, resvar_path):
         # Don't try to normalize leading/trailing slashes,
         # "we're all consenting adults here"
         self.baseabsrule = ''.join((self.api.base_path or '', res_path,
-                                    var_path or ''))
+                                    resvar_path or ''))
 
         self.res_endpoint = self.api.ENDPOINT_GLUE.join(
             (self.api.base_endpoint, endpoint)
@@ -253,10 +253,10 @@ class _Resource:
     put = partialmethod(_make_decorator, 'PUT')
 
 class ResourceFromFunctions(_Resource):
-    def __init__(self, api, endpoint, res_path=None, var_path=None):
+    def __init__(self, api, endpoint, res_path=None, resvar_path=None):
         super().__init__(api)
         respath = res_path or '/' + api.path_from_endpoint(endpoint)
-        super().post_init(endpoint, res_path=respath, var_path=var_path)
+        super().post_init(endpoint, res_path=respath, resvar_path=resvar_path)
 
     def _route_function_hook(self, function, var_path, http_method):
         self._route_function(function, var_path, http_method)
@@ -269,12 +269,12 @@ class ResourceFromClass(_Resource):
     def __init__(self, api):
         super().__init__(api)
 
-    def post_init(self, resource, res_path=None, var_path=None):
+    def post_init(self, resource, res_path=None, resvar_path=None):
         respath = res_path or '/' + self.api.path_from_endpoint(
             resource.__class__.__name__)
 
         super().post_init(endpoint=resource.__class__.__name__,
-                          res_path=respath, var_path=var_path)
+                          res_path=respath, resvar_path=resvar_path)
 
         for fname, function in inspect.getmembers(resource,
                                                   predicate=inspect.ismethod):
