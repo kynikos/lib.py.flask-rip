@@ -211,7 +211,7 @@ class _Resource:
         else:
             marshal_data = lambda outdata: outdata  # noqa
 
-        if self.api.openapi_spec:
+        if in_schema and self.api.openapi_spec:
             self.api.openapi_spec.definition(in_schema.__class__.__name__,
                                              schema=in_schema.__class__)
 
