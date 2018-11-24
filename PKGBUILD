@@ -3,7 +3,7 @@
 _name='flask-restinpeace'
 
 pkgname="python-${_name}"
-pkgver='1.2.0'
+pkgver='1.2.1'
 pkgrel=1
 pkgdesc="Create Flask REST APIs in peace."
 arch=('any')
@@ -12,7 +12,7 @@ license=('MIT')
 depends=('python-flask-marshmallow' 'python-apispec')
 makedepends=('python-setuptools')
 source=("https://files.pythonhosted.org/packages/source/${_name::1}/${_name}/${_name}-${pkgver}.tar.gz")
-sha256sums=('c7644a27d3e7205dcc852860ba71359701ed44e0d23226f746e1fadadd540bd6')
+sha256sums=('4c585d271c270dfad1848c0fe157ff8b7d75dce4291414c817607219d0ea92c7')
 
 package() {
     cd "${srcdir}/${_name}-${pkgver}"

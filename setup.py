@@ -3,7 +3,7 @@ from setuptools import setup
 setup(
     # Flask-RIP is already taken
     name='flask-restinpeace',
-    version='1.2.0',
+    version='1.2.1',
     description=('Create Flask REST APIs in peace.'),
     long_description=('Create Flask REST APIs in peace.'),
     url='https://github.com/kynikos/lib.py.flask-rip',
