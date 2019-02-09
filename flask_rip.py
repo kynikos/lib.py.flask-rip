@@ -11,6 +11,8 @@ from flask import request
 from marshmallow import post_load, UnmarshalResult, ValidationError
 from flask_marshmallow import Marshmallow, Schema as MASchema
 from apispec import APISpec
+from apispec.ext.marshmallow import MarshmallowPlugin
+from apispec_webframeworks.flask import FlaskPlugin
 
 IMPLICIT = 0b01
 EXPLICIT = 0b10
@@ -32,10 +34,26 @@ class API:
 
     def __init__(self, app, base_path=None, base_endpoint=None,
                  parent_api=None, path_from_endpoint=camel_to_kebab,
-                 base_method_path=IMPLICIT, openapi_spec=None):
+                 base_method_path=IMPLICIT,
+                 # TODO: Deprecate the openapi_spec option in a following major
+                 #       release, only use openapi_conf
+                 openapi_spec=None,
+                 openapi_conf=None):
         self.app = app
         self.parent_api = parent_api
-        self.openapi_spec = openapi_spec
+
+        if openapi_conf:
+            openapi_conf.update(plugins=(
+                FlaskPlugin(),
+                MarshmallowPlugin(),
+            ))
+            self.openapi_spec = APISpec(**openapi_conf)
+        elif openapi_spec:
+            # TODO: Deprecate the openapi_spec option in a following major
+            #       release, only use openapi_conf
+            self.openapi_spec = openapi_spec
+        else:
+            self.openapi_spec = None
 
         if parent_api:
             self.path_from_endpoint = (path_from_endpoint or
@@ -69,10 +87,6 @@ class API:
 
         self.ma = Marshmallow(app)
 
-        if self.openapi_spec:
-            self.openapi_spec.setup_plugin('apispec.ext.flask')
-            self.openapi_spec.setup_plugin('apispec.ext.marshmallow')
-
         self.subapis = []
 
         self.resource_from_class = ResourceFromClass(self)
@@ -88,9 +102,6 @@ class API:
         # instance
         self.Schema = Schema
         self.MASchema = MASchema
-        # No point in exporting APISpec too, because that must be already
-        # instantiated when constructing this class
-        # self.APISpec = APISpec
 
     def append_api(self, base_endpoint, base_path=None):
         subapi = self.__class__(self.app, parent_api=self, base_path=base_path,
@@ -166,6 +177,7 @@ class _Resource:
                     endpoint=endpoint,
                     view_func=function,
                     methods=(http_method, ))
+
         else:
             self.api.app.add_url_rule(
                 absrule,
@@ -175,7 +187,7 @@ class _Resource:
 
         if self.api.openapi_spec:
             with self.api.app.test_request_context():
-                self.api.openapi_spec.add_path(view=function)
+                self.api.openapi_spec.path(view=function)
 
     def _route_function_hook(self, function, var_path, http_method, action):
         raise NotImplementedError()
@@ -202,8 +214,8 @@ class _Resource:
             marshal_data = lambda outdata: outdata  # noqa
 
         if in_schema and self.api.openapi_spec:
-            self.api.openapi_spec.definition(in_schema.__class__.__name__,
-                                             schema=in_schema.__class__)
+            self.api.openapi_spec.components.schema(
+                in_schema.__class__.__name__, schema=in_schema.__class__)
 
         def decorator(function):
 

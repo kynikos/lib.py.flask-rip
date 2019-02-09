@@ -11,6 +11,7 @@ url="https://github.com/kynikos/lib.py.flask-rip"
 license=('MIT')
 depends=('python-flask-marshmallow'
          'python-apispec'
+         'python-apispec-webframeworks'
          # python-yaml is a python-apispec optdepend, but it seems required
          # to use this module?
          # TODO: Report a bug?
