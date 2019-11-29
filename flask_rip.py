@@ -8,7 +8,12 @@ from collections import defaultdict, namedtuple
 import inspect
 import re
 from flask import request
-from marshmallow import post_load, UnmarshalResult, ValidationError
+from marshmallow import post_load, ValidationError
+try:
+    # Marshmallow 2 (old)
+    from marshmallow import UnmarshalResult
+except ImportError:
+    UnmarshalResult = None
 from flask_marshmallow import Marshmallow, Schema as MASchema
 from apispec import APISpec
 from apispec.ext.marshmallow import MarshmallowPlugin
@@ -227,7 +232,7 @@ class _Resource:
 
                 indata = unmarshal_data()
 
-                if type(indata) is UnmarshalResult:
+                if UnmarshalResult and type(indata) is UnmarshalResult:
                     # Marshmallow<3
                     if indata.errors:
                         raise ValidationError(indata.errors)
@@ -299,7 +304,10 @@ class ResourceFromClass(_Resource):
 
 class Schema(MASchema):
     @post_load
-    def make_namedtuple(self, data):
+    # **kwargs is needed because in Marshmallow 3 decorated methods and
+    # handle_error receive many and partial as keyword arguments
+    # https://marshmallow.readthedocs.io/en/stable/upgrading.html#decorated-methods-and-handle-error-receive-many-and-partial
+    def make_namedtuple(self, data, **kwargs):
         # Yes, the order of keys() and values() are ensured to correspond
         # https://docs.python.org/3/library/stdtypes.html#dict-views
         return namedtuple("UnmarshalNamedTuple", data.keys())(*data.values())
